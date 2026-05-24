@@ -51,7 +51,8 @@ ws://127.0.0.1:3003/ws
 ## Install
 
 ```powershell
-cd C:\Users\ldmus\13th-age\foundry-local-mcp
+git clone https://github.com/Muscian/foundry-local-mcp.git
+cd foundry-local-mcp
 npm install
 ```
 
