@@ -1,0 +1,24 @@
+{
+  "name": "foundry-local-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local MCP bridge for Cursor and Foundry VTT.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Muscian/foundry-local-mcp.git"
+  },
+  "bin": {
+    "foundry-local-mcp": "./src/server.mjs"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "ws": "latest",
+    "zod": "latest"
+  }
+}
