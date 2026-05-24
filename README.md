@@ -81,6 +81,8 @@ GET  http://127.0.0.1:3002/world-info
 POST http://127.0.0.1:3002/command
 POST http://127.0.0.1:3002/companion-command
 POST http://127.0.0.1:3002/archmage/create
+POST http://127.0.0.1:3002/token/stamp
+POST http://127.0.0.1:3002/token/generate
 ```
 
 ## MCP Client Config
@@ -117,6 +119,8 @@ For Cursor, add this server to `.cursor/mcp.json`:
 - `foundry_set_actor_prototype_token`: set prototype token image/dimensions.
 - `foundry_update_token_from_actor`: update an existing token to use its actor image.
 - `foundry_create_token_from_actor`: create a token using actor/prototype token art and explicit dimensions.
+- `foundry_stamp_token_image`: turn a local image file, such as a Cursor-generated image, into a circular token PNG. It can upload the PNG into Foundry through the companion module and assign it to an actor prototype token.
+- `foundry_generate_token_image`: generate image art from a prompt, stamp it into a circular token PNG, and optionally upload or assign it in Foundry.
 
 The debug HTTP endpoints mirror the same functionality and are useful for smoke tests before using Cursor tools.
 
@@ -124,9 +128,88 @@ The debug HTTP endpoints mirror the same functionality and are useful for smoke 
 
 `archmage_create_npc` uses `src/scripts/custom-monster-builder.cjs`, so it follows the same Archmage/13th Age schema as the custom monster pipeline.
 
-The current bridge command `create-actor` does not accept `prototypeToken`, so the actor portrait is set via `img`, but token prototype art may still need manual adjustment or a later dedicated tool.
+The generic bridge command `create-actor` does not accept `prototypeToken`, so `archmage_create_npc` creates the actor through the generic bridge and then applies actor/prototype token art through the `foundry-local-bridge` companion module when it is connected.
 
-The companion module provides that dedicated prototype/token path.
+If token upload or actor image assignment fails with `Unknown companion command: upload-token-image`, Foundry is still running an older companion module. Update/reinstall `foundry-local-bridge` and reload the world as GM.
+
+## Cursor Text-To-Token Workflow
+
+Use this flow when you want Cursor to produce token art and place it in Foundry.
+
+### Full Prompt-To-Token
+
+The fully automated path uses `foundry_generate_token_image`.
+
+For local free generation, run AUTOMATIC1111 Stable Diffusion WebUI with its API enabled:
+
+```powershell
+webui-user.bat --api
+```
+
+By default this MCP server calls:
+
+```txt
+http://127.0.0.1:7860/sdapi/v1/txt2img
+```
+
+Override it with `FOUNDRY_LOCAL_MCP_A1111_URL` or by passing `generatorUrl`.
+
+Example:
+
+```json
+{
+  "provider": "automatic1111",
+  "prompt": "dark fantasy portrait token art, gaunt drowned noble wraith, pale blue witchfire eyes, tattered festival finery, centered bust, transparent background feeling, high detail",
+  "negativePrompt": "text, watermark, logo, frame, border, blurry, extra faces",
+  "tokenName": "Drowned Noble Wraith",
+  "actorId": "abc123",
+  "imageWidth": 768,
+  "imageHeight": 768,
+  "size": 512,
+  "width": 1,
+  "height": 1,
+  "foundrySavePath": "worlds/my-world/tokens"
+}
+```
+
+There is also a `pollinations` provider for quick free public-web experiments:
+
+```json
+{
+  "provider": "pollinations",
+  "prompt": "dark fantasy goblin lantern bearer, centered portrait, token art",
+  "tokenName": "Goblin Lantern Bearer",
+  "uploadToFoundry": true
+}
+```
+
+Use local AUTOMATIC1111 for private campaign prep and reliable repeatability. Use `pollinations` only for throwaway tests or when you accept sending the prompt to a public service.
+
+### Stamp Existing Art
+
+If Cursor or another tool has already produced a local image file, use `foundry_stamp_token_image`.
+
+1. Ask Cursor to generate a square creature or NPC image.
+2. Call `foundry_stamp_token_image` with the generated image path.
+3. Pass `actorId` to upload the stamped PNG into Foundry and set that actor's prototype token, or pass `uploadToFoundry: true` to only upload the asset.
+
+Example:
+
+```json
+{
+  "sourceImagePath": "C:\\Users\\ldmus\\Downloads\\velisse-wraith.png",
+  "tokenName": "Velisse Wraith",
+  "actorId": "abc123",
+  "size": 512,
+  "width": 1,
+  "height": 1,
+  "borderColor": "#4b3528",
+  "borderAccentColor": "#d6c184",
+  "foundrySavePath": "worlds/my-world/tokens"
+}
+```
+
+If `actorId` is present, the tool uploads automatically. Without `actorId`, set `uploadToFoundry` to `true` if you only want the file copied into Foundry's Data storage. If `foundrySavePath` is omitted, the companion module saves to `worlds/<world-id>/tokens`.
 
 ## Installing the Companion Module on FoundryServer
 

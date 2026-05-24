@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
+    "sharp": "^0.32.6",
     "ws": "latest",
     "zod": "latest"
   }
