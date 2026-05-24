@@ -28,8 +28,8 @@ MCP-capable AI client
 
 - Cursor running on the same machine where you open Foundry in the browser.
 - Your Foundry world open as GM.
-- A Foundry API Bridge-compatible module in the world.
-- The module's WebSocket URL set to:
+- A Foundry API Bridge-compatible module in the world. This handles general world commands such as actor CRUD, item CRUD, scene queries, token placement, dice, combat, and journals.
+- The Foundry API Bridge-compatible module's WebSocket URL set to:
 
 ```txt
 ws://127.0.0.1:3001/ws
@@ -41,12 +41,21 @@ If the module requires an API key even for local use, use a placeholder value su
 local-dev
 ```
 
-- The companion module [`foundry-local-bridge`](https://github.com/Muscian/foundry-local-bridge), installed and enabled in the same world.
+- The companion module [`foundry-local-bridge`](https://github.com/Muscian/foundry-local-bridge), installed and enabled in the same world. This handles prototype-token and token texture/dimension commands that generic bridge modules often do not expose.
 - The companion module's WebSocket URL set to:
 
 ```txt
 ws://127.0.0.1:3003/ws
 ```
+
+## Do I Need Both Foundry Modules?
+
+For the full feature set, yes:
+
+- **Foundry API Bridge-compatible module** on `ws://127.0.0.1:3001/ws`: general Foundry automation.
+- **Foundry Local Bridge** on `ws://127.0.0.1:3003/ws`: prototype token and token image/size operations.
+
+If you only need token/prototype operations, `foundry-local-bridge` can work by itself. If you only need the generic commands exposed by your existing bridge module, the companion module is optional.
 
 ## Install
 
