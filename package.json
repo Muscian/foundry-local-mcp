@@ -14,7 +14,9 @@
   },
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs"
+    "dev": "node --watch src/server.mjs",
+    "check": "node --check src/server.mjs",
+    "http": "node scripts/http-call.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",

@@ -71,6 +71,39 @@ npm install
 npm start
 ```
 
+For local development with automatic restart on code changes:
+
+```powershell
+npm run dev
+```
+
+This uses Node's built-in `--watch` mode. When the server is launched by Cursor through `.cursor/mcp.json`, add `"--watch"` as the first argument in `args` so edits to `src/server.mjs` reload without a manual restart.
+
+### Single-instance coordination
+
+By default the server enforces a single active instance through a lock file at:
+
+```txt
+%USERPROFILE%\.foundry-local-mcp\instance.json
+```
+
+On startup, the newest instance becomes leader. Older live instances are terminated automatically. Before HTTP requests, MCP commands, and periodic heartbeats, the leader re-checks the lock; if a newer instance appears, the older one shuts down cleanly.
+
+This avoids the common conflict where Cursor's MCP process and a manual `npm run dev` both try to bind ports `3001`/`3002`/`3003`.
+
+Disable the behavior for debugging with:
+
+```txt
+FOUNDRY_LOCAL_MCP_SINGLE_INSTANCE=false
+```
+
+Optional overrides:
+
+```txt
+FOUNDRY_LOCAL_MCP_LOCK_DIR=C:\path\to\lock-dir
+FOUNDRY_LOCAL_MCP_HEARTBEAT_MS=5000
+```
+
 The server logs to stderr so stdout remains reserved for MCP.
 
 For debug/testing from a terminal, the same process also exposes:
@@ -95,6 +128,7 @@ For Cursor, add this server to `.cursor/mcp.json`:
     "foundry-local": {
       "command": "node",
       "args": [
+        "--watch",
         "C:\\\\path\\\\to\\\\foundry-local-mcp\\\\src\\\\server.mjs"
       ],
       "env": {
@@ -123,6 +157,32 @@ For Cursor, add this server to `.cursor/mcp.json`:
 - `foundry_generate_token_image`: generate image art from a prompt, stamp it into a circular token PNG, and optionally upload or assign it in Foundry.
 
 The debug HTTP endpoints mirror the same functionality and are useful for smoke tests before using Cursor tools.
+
+## Reusable Workflow (No Per-Creature Scripts)
+
+Use the MCP tools or HTTP endpoints with JSON parameters only. Do not add one-off scripts per actor.
+
+Typical flows:
+
+1. **New actor + generated token**
+   - `archmage_create_npc` with stats from YAML or compendium
+   - `foundry_generate_token_image` with `prompt`, `tokenName`, and `actorId`
+
+2. **Re-stamp an existing actor**
+   - `foundry_stamp_token_image` with `sourceImagePath`, `actorId`, and token dimensions
+   - or `foundry_generate_token_image` if you also want fresh art
+
+3. **HTTP equivalent from a terminal**
+   - `npm run http -- status`
+   - `npm run http -- token/generate @path/to/params.json`
+   - `npm run http -- token/stamp @path/to/params.json`
+   - `npm run http -- archmage/create @path/to/actor.json`
+
+Keep parameters in JSON files or MCP tool calls. The stamping logic lives only in `src/server.mjs`.
+
+After changing `foundry-local-mcp` or `foundry-local-bridge`, restart the Cursor MCP server (`foundry-local`) and reload Foundry as GM so the browser loads the updated companion module.
+
+Token generation defaults append `high contrast, crisp details, no haze` to prompts and apply a negative prompt against fog/washed-out looks. Pollinations calls set `enhance=false` so the service does not rewrite prompts into softer, hazier descriptions. Stamping places the portrait above the border ring so SVG filter bleed cannot wash out the subject.
 
 ## Notes
 
@@ -212,8 +272,8 @@ Example:
   "size": 512,
   "width": 1,
   "height": 1,
-  "borderColor": "#4b3528",
-  "borderAccentColor": "#d6c184",
+  "borderColor": "#d4cfc4",
+  "borderAccentColor": "#f7f4ee",
   "foundrySavePath": "worlds/my-world/tokens"
 }
 ```

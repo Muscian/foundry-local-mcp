@@ -1,0 +1,16 @@
+[
+  {
+    "name": "William",
+    "actorId": "qXkxG2y6HilEZmfI",
+    "tokenName": "William",
+    "prompt": "dark fantasy portrait token art, undead gentleman zombie named William, pale grey-green rotting skin with hollow amber eyes, wearing a battered charcoal gabardine trench coat and tilted fedora hat, once-elegant noir detective style now disheveled and decaying, tattered lapels, loose tie, subtle grave dirt, centered bust portrait, plain dark background, horror noir, single subject, no text, no frame, no border",
+    "negativePrompt": "text, watermark, logo, frame, border, cartoon, anime, bright saturated colors, gore splatter, modern clothing, baseball cap, hoodie, armor, cute"
+  },
+  {
+    "name": "Lobo Inquietante",
+    "actorId": "xMIi414yKn2fZeFc",
+    "tokenName": "lobo-inquietante",
+    "prompt": "dark fantasy portrait token art, undead restless wolf, half-rotting grey wolf with trembling exposed ribs as if dry-panting after death, sorrowful demonic ember glow in the eyes, mournful rather than savage, mangy fur, dried blood, subtle grave mist, centered bust portrait of wolf head and shoulders, plain dark background, El Festival de Medio Solsticio tone, single subject, no text, no frame, no border",
+    "negativePrompt": "text, watermark, logo, frame, border, cartoon, anime, bright saturated colors, multiple wolves, humanoid, armor, collar, cute"
+  }
+]

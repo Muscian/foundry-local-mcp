@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import sharp from "sharp";
 import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
+import { createInstanceCoordinator } from "./instance-coordinator.mjs";
 
 const require = createRequire(import.meta.url);
 const { buildActor } = require("../../13th-age/src/scripts/custom-monster-builder.cjs");
@@ -34,6 +35,10 @@ const pendingCommands = new Map();
 let companionSocket = null;
 let companionConnectedAt = null;
 const pendingCompanionCommands = new Map();
+let instanceCoordinator = null;
+let foundryWss = null;
+let companionWss = null;
+let httpServer = null;
 
 function log(message, ...args) {
   // MCP stdio reserves stdout for protocol messages.
@@ -181,8 +186,27 @@ function statusPayload() {
     companionWebsocketUrl: `ws://${HOST}:${COMPANION_PORT}${COMPANION_WS_PATH}`,
     httpUrl: `http://${HOST}:${HTTP_PORT}`,
     pendingCommands: pendingCommands.size,
-    pendingCompanionCommands: pendingCompanionCommands.size
+    pendingCompanionCommands: pendingCompanionCommands.size,
+    instance: instanceCoordinator?.getStatus() ?? null
   };
+}
+
+function closeHttpServer(server) {
+  return new Promise((resolve) => {
+    if (!server) {
+      resolve();
+      return;
+    }
+    server.close(() => resolve());
+  });
+}
+
+async function closeWebSocketServer(wss) {
+  if (!wss) return;
+  for (const client of wss.clients) {
+    client.close();
+  }
+  await closeHttpServer(wss);
 }
 
 function readJsonBody(request) {
@@ -220,6 +244,7 @@ async function handleHttpRequest(request, response) {
   const url = new URL(request.url ?? "/", `http://${HOST}:${HTTP_PORT}`);
 
   try {
+    await instanceCoordinator?.assertLeadership();
     if (request.method === "GET" && url.pathname === "/status") {
       sendJson(response, 200, statusPayload());
       return;
@@ -316,6 +341,7 @@ async function sendFoundryCommand(type, params = {}) {
 }
 
 async function requireSuccess(type, params = {}) {
+  await instanceCoordinator?.assertLeadership();
   const response = await sendFoundryCommand(type, params);
   if (!response.success) {
     throw new Error(response.error || `Foundry command failed: ${type}`);
@@ -350,6 +376,7 @@ async function sendCompanionCommand(type, params = {}) {
 }
 
 async function requireCompanionSuccess(type, params = {}) {
+  await instanceCoordinator?.assertLeadership();
   const response = await sendCompanionCommand(type, params);
   if (!response.success) {
     throw new Error(response.error || `Companion command failed: ${type}`);
@@ -427,6 +454,44 @@ function promptToFilename(prompt, fallback = "generated-token-source") {
   );
 }
 
+const DEFAULT_TOKEN_NEGATIVE_PROMPT = [
+  "text, watermark, logo, frame, border, circular frame,",
+  "haze, fog, mist, smoke, washed out, desaturated, low contrast, gray veil,",
+  "blurry, soft focus, overexposed, faded, muted colors"
+].join(" ");
+
+const DEFAULT_TOKEN_PROMPT_SUFFIX = [
+  "high contrast, crisp details, rich colors, sharp focus,",
+  "clean lighting, no haze, no fog, no gray wash"
+].join(" ");
+
+function buildTokenPrompt(prompt) {
+  const text = String(prompt || "").trim();
+  if (!text) return DEFAULT_TOKEN_PROMPT_SUFFIX;
+  if (/high contrast|no haze|crisp details|no gray wash/i.test(text)) return text;
+  return `${text}, ${DEFAULT_TOKEN_PROMPT_SUFFIX}`;
+}
+
+function buildTokenNegativePrompt(negativePrompt) {
+  const text = String(negativePrompt || "").trim();
+  return text || DEFAULT_TOKEN_NEGATIVE_PROMPT;
+}
+
+async function prepareTokenSourceImage(sourceImagePath, params = {}) {
+  const contrast = Number(params.sourceContrast ?? 1.1);
+  const saturation = Number(params.sourceSaturation ?? 1.08);
+  const brightness = Number(params.sourceBrightness ?? 1.03);
+
+  let pipeline = sharp(sourceImagePath).ensureAlpha();
+  if (contrast !== 1 || saturation !== 1 || brightness !== 1) {
+    pipeline = pipeline
+      .modulate({ brightness, saturation })
+      .linear(contrast, 128 * (1 - contrast));
+  }
+
+  return pipeline.png().toBuffer();
+}
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const text = await response.text();
@@ -461,8 +526,8 @@ async function writeGeneratedSourceImage(params, buffer) {
 
 function automatic1111Payload(params) {
   const payload = {
-    prompt: params.prompt,
-    negative_prompt: params.negativePrompt,
+    prompt: buildTokenPrompt(params.prompt),
+    negative_prompt: buildTokenNegativePrompt(params.negativePrompt),
     width: Number(params.imageWidth ?? 768),
     height: Number(params.imageHeight ?? 768),
     steps: Number(params.steps ?? 24),
@@ -500,12 +565,14 @@ async function generateWithAutomatic1111(params) {
 
 async function generateWithPollinations(params) {
   const baseUrl = String(params.generatorUrl || POLLINATIONS_IMAGE_URL).replace(/\/+$/, "");
-  const url = new URL(`${baseUrl}/prompt/${encodeURIComponent(params.prompt)}`);
+  const url = new URL(`${baseUrl}/prompt/${encodeURIComponent(buildTokenPrompt(params.prompt))}`);
 
   url.searchParams.set("width", String(Number(params.imageWidth ?? 768)));
   url.searchParams.set("height", String(Number(params.imageHeight ?? 768)));
   url.searchParams.set("nologo", "true");
   url.searchParams.set("private", "true");
+  url.searchParams.set("enhance", "false");
+  url.searchParams.set("negative_prompt", buildTokenNegativePrompt(params.negativePrompt));
   if (params.seed !== undefined) url.searchParams.set("seed", String(Number(params.seed)));
   if (params.model) url.searchParams.set("model", params.model);
 
@@ -546,6 +613,9 @@ function generatedImageStampParams(params, sourceImagePath) {
     backgroundColor: params.backgroundColor,
     fit: params.fit,
     position: params.position,
+    sourceContrast: params.sourceContrast,
+    sourceSaturation: params.sourceSaturation,
+    sourceBrightness: params.sourceBrightness,
     uploadToFoundry: params.uploadToFoundry,
     foundrySavePath: params.foundrySavePath,
     actorId: params.actorId,
@@ -581,30 +651,86 @@ function assertColor(value, fieldName) {
 
 function circleSvg(size, radius, fill = "white") {
   return Buffer.from(
-    `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
       `<circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="${fill}"/>` +
     "</svg>"
   );
 }
 
+function circleAlphaMaskBuffer(size, radius) {
+  const center = size / 2;
+  const radiusSquared = radius * radius;
+  const buffer = Buffer.alloc(size * size);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = x + 0.5 - center;
+      const dy = y + 0.5 - center;
+      buffer[y * size + x] = dx * dx + dy * dy <= radiusSquared ? 255 : 0;
+    }
+  }
+
+  return buffer;
+}
+
+const DEFAULT_BORDER_COLOR = "#d4cfc4";
+const DEFAULT_BORDER_ACCENT_COLOR = "#f7f4ee";
+const DEFAULT_BORDER_WIDTH_RATIO = 0.0475;
+
+function defaultBorderWidth(size) {
+  return Math.max(18, Math.round(size * DEFAULT_BORDER_WIDTH_RATIO));
+}
+
 function borderSvg(size, borderWidth, borderColor, borderAccentColor) {
   const center = size / 2;
-  const radius = center - borderWidth / 2;
-  const accentRadius = center - borderWidth - 2;
+  const outerRadius = center - 0.5;
+  const innerRadius = outerRadius - borderWidth;
+  const textureSeed = (size * 7 + borderWidth * 3) % 997;
+  const innerHighlightRadius = innerRadius + Math.max(0.75, borderWidth * 0.04);
+  const outerHighlightRadius = outerRadius - Math.max(0.75, borderWidth * 0.04);
+  const highlightStroke = Math.max(1, Math.min(2, borderWidth * 0.08));
 
   return Buffer.from(
-    `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
-      `<circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="${borderColor}" stroke-width="${borderWidth}"/>` +
-      `<circle cx="${center}" cy="${center}" r="${accentRadius}" fill="none" stroke="${borderAccentColor}" stroke-width="2" opacity="0.75"/>` +
+    `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">` +
+      "<defs>" +
+        `<clipPath id="outerClip">` +
+          `<circle cx="${center}" cy="${center}" r="${outerRadius}"/>` +
+        "</clipPath>" +
+        `<filter id="grain" x="-10%" y="-10%" width="120%" height="120%">` +
+          `<feTurbulence type="fractalNoise" baseFrequency="0.72" numOctaves="4" seed="${textureSeed}" result="noise"/>` +
+          `<feColorMatrix in="noise" type="saturate" values="0" result="mono"/>` +
+          `<feComponentTransfer in="mono">` +
+            `<feFuncA type="linear" slope="0.32"/>` +
+          "</feComponentTransfer>" +
+          `<feBlend in="SourceGraphic" in2="mono" mode="soft-light"/>` +
+        "</filter>" +
+        `<linearGradient id="bevel" x1="8%" y1="6%" x2="92%" y2="94%">` +
+          `<stop offset="0%" stop-color="#ffffff" stop-opacity="0.98"/>` +
+          `<stop offset="28%" stop-color="${borderAccentColor}"/>` +
+          `<stop offset="52%" stop-color="${borderColor}"/>` +
+          `<stop offset="78%" stop-color="${borderAccentColor}" stop-opacity="0.92"/>` +
+          `<stop offset="100%" stop-color="#ffffff" stop-opacity="0.82"/>` +
+        "</linearGradient>" +
+        `<mask id="ring">` +
+          `<rect width="${size}" height="${size}" fill="black"/>` +
+          `<circle cx="${center}" cy="${center}" r="${outerRadius}" fill="white"/>` +
+          `<circle cx="${center}" cy="${center}" r="${innerRadius}" fill="black"/>` +
+        "</mask>" +
+      "</defs>" +
+      `<g clip-path="url(#outerClip)" filter="url(#grain)">` +
+        `<rect width="${size}" height="${size}" fill="url(#bevel)" mask="url(#ring)"/>` +
+        `<circle cx="${center}" cy="${center}" r="${innerHighlightRadius}" fill="none" stroke="#ffffff" stroke-width="${highlightStroke}" opacity="0.72"/>` +
+        `<circle cx="${center}" cy="${center}" r="${outerHighlightRadius}" fill="none" stroke="#ffffff" stroke-width="${highlightStroke}" opacity="0.88"/>` +
+      "</g>" +
     "</svg>"
   );
 }
 
 async function createStampedTokenImage(params) {
   const size = Number(params.size ?? 512);
-  const borderWidth = Number(params.borderWidth ?? Math.max(16, Math.round(size * 0.055)));
-  const borderColor = params.borderColor ?? "#4b3528";
-  const borderAccentColor = params.borderAccentColor ?? "#d6c184";
+  const borderWidth = Number(params.borderWidth ?? defaultBorderWidth(size));
+  const borderColor = params.borderColor ?? DEFAULT_BORDER_COLOR;
+  const borderAccentColor = params.borderAccentColor ?? DEFAULT_BORDER_ACCENT_COLOR;
   const backgroundColor = params.backgroundColor ?? "#00000000";
   const fit = params.fit ?? "cover";
   const position = params.position ?? "center";
@@ -626,16 +752,26 @@ async function createStampedTokenImage(params) {
   await fs.access(sourceImagePath);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
 
-  const innerRadius = size / 2 - borderWidth;
-  const mask = circleSvg(size, innerRadius);
-  const framedSubject = await sharp(sourceImagePath)
+  const innerRadius = size / 2 - borderWidth - 0.5;
+  const outerRadius = size / 2 - 0.5;
+  const subjectMask = circleSvg(size, innerRadius);
+  const innerCutout = circleSvg(size, innerRadius);
+  const outerAlphaMask = circleAlphaMaskBuffer(size, outerRadius);
+  const sourceBuffer = await prepareTokenSourceImage(sourceImagePath, params);
+  const framedSubject = await sharp(sourceBuffer)
     .resize(size, size, { fit, position })
     .ensureAlpha()
-    .composite([{ input: mask, blend: "dest-in" }])
+    .composite([{ input: subjectMask, blend: "dest-in" }])
     .png()
     .toBuffer();
 
-  const output = await sharp({
+  const borderLayer = await sharp(borderSvg(size, borderWidth, borderColor, borderAccentColor))
+    .ensureAlpha()
+    .composite([{ input: innerCutout, blend: "dest-out" }])
+    .png()
+    .toBuffer();
+
+  const withBorder = await sharp({
     create: {
       width: size,
       height: size,
@@ -643,10 +779,19 @@ async function createStampedTokenImage(params) {
       background: backgroundColor
     }
   })
-    .composite([
-      { input: framedSubject },
-      { input: borderSvg(size, borderWidth, borderColor, borderAccentColor) }
-    ])
+    .composite([{ input: borderLayer }])
+    .png()
+    .toBuffer();
+
+  const composed = await sharp(withBorder)
+    .composite([{ input: framedSubject }])
+    .png()
+    .toBuffer();
+
+  const output = await sharp(composed)
+    .joinChannel(outerAlphaMask, {
+      raw: { width: size, height: size, channels: 1 }
+    })
     .png()
     .toBuffer();
 
@@ -676,15 +821,22 @@ async function stampTokenImageWorkflow(params) {
   }
 
   if (params.actorId) {
-    prototypeToken = await requireCompanionSuccess("set-actor-prototype-token", {
-      actorId: params.actorId,
-      textureSrc: uploaded.path,
-      width: params.width,
-      height: params.height,
-      actorLink: params.actorLink,
-      disposition: params.disposition,
-      updateActorImg: params.updateActorImg ?? true
-    });
+    try {
+      prototypeToken = await requireCompanionSuccess("set-actor-prototype-token", {
+        actorId: params.actorId,
+        textureSrc: uploaded.path,
+        width: params.width,
+        height: params.height,
+        actorLink: params.actorLink,
+        disposition: params.disposition,
+        updateActorImg: params.updateActorImg ?? true
+      });
+    } catch (error) {
+      prototypeToken = {
+        error: error.message,
+        uploadedPath: uploaded?.path ?? null
+      };
+    }
   }
 
   return {
@@ -806,11 +958,14 @@ const stampTokenImageSchema = {
   outputPath: z.string().optional(),
   size: z.number().int().min(128).max(2048).default(512),
   borderWidth: z.number().int().min(0).optional(),
-  borderColor: colorSchema.default("#4b3528"),
-  borderAccentColor: colorSchema.default("#d6c184"),
+  borderColor: colorSchema.default(DEFAULT_BORDER_COLOR),
+  borderAccentColor: colorSchema.default(DEFAULT_BORDER_ACCENT_COLOR),
   backgroundColor: colorSchema.default("#00000000"),
   fit: z.enum(["cover", "contain", "fill", "inside", "outside"]).default("cover"),
   position: z.string().default("center"),
+  sourceContrast: z.number().min(0.5).max(2).optional(),
+  sourceSaturation: z.number().min(0).max(3).optional(),
+  sourceBrightness: z.number().min(0.5).max(2).optional(),
   uploadToFoundry: z.boolean().default(false),
   foundrySavePath: z.string().optional(),
   actorId: z.string().optional(),
@@ -840,11 +995,14 @@ const generateTokenImageSchema = {
   outputPath: z.string().optional(),
   size: z.number().int().min(128).max(2048).default(512),
   borderWidth: z.number().int().min(0).optional(),
-  borderColor: colorSchema.default("#4b3528"),
-  borderAccentColor: colorSchema.default("#d6c184"),
+  borderColor: colorSchema.default(DEFAULT_BORDER_COLOR),
+  borderAccentColor: colorSchema.default(DEFAULT_BORDER_ACCENT_COLOR),
   backgroundColor: colorSchema.default("#00000000"),
   fit: z.enum(["cover", "contain", "fill", "inside", "outside"]).default("cover"),
   position: z.string().default("center"),
+  sourceContrast: z.number().min(0.5).max(2).optional(),
+  sourceSaturation: z.number().min(0).max(3).optional(),
+  sourceBrightness: z.number().min(0.5).max(2).optional(),
   uploadToFoundry: z.boolean().default(false),
   foundrySavePath: z.string().optional(),
   actorId: z.string().optional(),
@@ -997,10 +1155,44 @@ server.registerTool(
   ].join("\n"))
 );
 
-startWebSocketServer();
-startCompanionWebSocketServer();
-startHttpServer();
+instanceCoordinator = createInstanceCoordinator({
+  log,
+  host: HOST,
+  ports: {
+    foundry: PORT,
+    http: HTTP_PORT,
+    companion: COMPANION_PORT
+  }
+});
+instanceCoordinator.installSignalHandlers();
 
-const transport = new StdioServerTransport();
+const leadership = await instanceCoordinator.claimLeadership();
+if (!leadership.isLeader) {
+  log(
+    `Exiting because a newer instance is already running (pid ${leadership.pid}, started ${leadership.startedAt}).`
+  );
+  process.exit(0);
+}
+
+log(
+  `Instance leader claimed (pid ${process.pid}, started ${leadership.startedAt}, lock ${leadership.lockPath})`
+);
+
+let transport = null;
+instanceCoordinator.setShutdownHandler(async () => {
+  await closeWebSocketServer(foundryWss);
+  await closeWebSocketServer(companionWss);
+  await closeHttpServer(httpServer);
+  if (transport?.close) {
+    await transport.close();
+  }
+});
+instanceCoordinator.startHeartbeat();
+
+foundryWss = startWebSocketServer();
+companionWss = startCompanionWebSocketServer();
+httpServer = startHttpServer();
+
+transport = new StdioServerTransport();
 await server.connect(transport);
 log("MCP stdio server ready");
