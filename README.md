@@ -132,6 +132,15 @@ The generic bridge command `create-actor` does not accept `prototypeToken`, so `
 
 If token upload or actor image assignment fails with `Unknown companion command: upload-token-image`, Foundry is still running an older companion module. Update/reinstall `foundry-local-bridge` and reload the world as GM.
 
+## Connection Toast Spam
+
+If Foundry API Bridge keeps showing connected/disconnected toasts:
+
+1. Run only one local MCP server. If Cursor MCP is enabled, do not also run `npm start` manually in another terminal.
+2. Keep one GM browser tab open for the world.
+3. For local-only use, point Foundry API Bridge WebSocket to `ws://127.0.0.1:3001/ws` and disable hosted REST/sync settings that still target `foundry-mcp.com`.
+4. Restart the Cursor MCP server after updating `foundry-local-mcp`, so duplicate WebSocket clients are rejected instead of disconnecting the active Foundry session.
+
 ## Cursor Text-To-Token Workflow
 
 Use this flow when you want Cursor to produce token art and place it in Foundry.

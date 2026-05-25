@@ -60,7 +60,9 @@ function startWebSocketServer() {
 
   wss.on("connection", (socket, request) => {
     if (foundrySocket && foundrySocket.readyState === WebSocket.OPEN) {
-      foundrySocket.close(1012, "Replacing active Foundry connection");
+      log(`Rejected duplicate Foundry connection from ${request.socket.remoteAddress}; keeping existing client`);
+      socket.close(1008, "Another Foundry client is already connected");
+      return;
     }
 
     foundrySocket = socket;
@@ -116,7 +118,9 @@ function startCompanionWebSocketServer() {
 
   wss.on("connection", (socket, request) => {
     if (companionSocket && companionSocket.readyState === WebSocket.OPEN) {
-      companionSocket.close(1012, "Replacing active companion connection");
+      log(`Rejected duplicate companion connection from ${request.socket.remoteAddress}; keeping existing client`);
+      socket.close(1008, "Another Foundry client is already connected");
+      return;
     }
 
     companionSocket = socket;
